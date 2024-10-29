@@ -1,0 +1,6 @@
+apiVersion: v2
+name: cobalt-strike
+description: A Helm chart Cobalt Strike C2 Server
+type: application
+version: 0.1.0
+appVersion: "4.9"
