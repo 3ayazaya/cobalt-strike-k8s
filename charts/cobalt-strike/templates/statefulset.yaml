@@ -1,0 +1,139 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "cobalt-strike.fullname" . }}
+  labels:
+    {{- include "cobalt-strike.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  serviceName: {{ include "cobalt-strike.fullname" . }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "cobalt-strike.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "cobalt-strike.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "cobalt-strike.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+          {{- range .Values.service.ports }}
+          - containerPort: {{ .targetPort }}
+            protocol: {{ .protocol }}
+            name: {{ .name }}
+          {{- end }}
+          env:
+            - name: TS_PASSWORD
+              value: {{ .Values.teamserver.password | quote }}
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          args: [ "$(POD_IP)", "$(TS_PASSWORD)", "/opt/cobaltstrike/profile.c2" ]
+          readinessProbe:
+            failureThreshold: 3
+            initialDelaySeconds: 20
+            periodSeconds: 40
+            successThreshold: 1
+            tcpSocket:
+              {{ $adminPort := .Values.service.ports }}
+              {{ range $k, $v := $adminPort }}
+              {{ if eq (toString $v.name) "admin" }}
+              port: {{ toString $v.port }}
+              {{- end }}
+              {{- end }}
+          livenessProbe:
+            failureThreshold: 3
+            initialDelaySeconds: 10
+            periodSeconds: 60
+            successThreshold: 1
+            tcpSocket:
+              {{ $adminPort := .Values.service.ports }}
+              {{ range $k, $v := $adminPort }}
+              {{ if eq (toString $v.name) "admin" }}
+              port: {{ toString $v.port }}
+              {{- end }}
+              {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+          {{- if eq .Values.teamserver.persistence.enabled "true" }}
+            - name: teamserver-data
+              mountPath: /opt/cobaltstrike
+          {{- end }}
+            - name: {{ .Release.Name }}-profile-configmap
+              mountPath: /opt/cobaltstrike/profile.c2
+              subPath: profile.c2
+              readOnly: true
+      {{- if eq .Values.teamserver.persistence.enabled "true" }}
+      initContainers:
+        - name: init-copy-files
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          command: [ "/bin/sh", "-c" ]
+          args:
+            - |
+              if [ ! "$(ls -A /mnt/data)" ]; then
+              echo "Files copy in /mnt/data/";
+              cp -r /opt/cobaltstrike/* /mnt/data/;
+              echo "Done";
+              else
+                echo "Files already exist in /mnt/data; skipping copy.";
+              fi
+          volumeMounts:
+            - name: teamserver-data
+              mountPath: /mnt/data
+      {{- end }}
+      volumes:
+        - name: {{ .Release.Name }}-profile-configmap
+          configMap:
+            name: {{ .Release.Name }}-profile-configmap
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if .Values.teamserver.persistence.enabled }}
+  {{- if eq .Values.teamserver.persistence.enabled "true" }}
+  volumeClaimTemplates:
+    - metadata:
+        name: teamserver-data
+      spec:
+        accessModes:
+          - {{ .Values.teamserver.persistence.accessMode }}
+        resources:
+          requests:
+            storage: "{{ .Values.teamserver.persistence.size }}"
+        {{- if .Values.teamserver.persistence.storageClass }}
+        {{- if (eq "-" .Values.teamserver.persistence.storageClass) }}
+        storageClassName: ""
+        {{- else }}
+        storageClassName: "{{ .Values.teamserver.persistence.storageClass }}"
+        {{- end }}
+        {{- end }}
+        {{- end }}
+        {{- end }}
